@@ -39,11 +39,11 @@ def attention(query, key, value, mask=None, dropout=None):
 
 class MultiHeadedAttention(nn.Module):
 
-    def __init__(self, h, d_model, dropout=0.1):
+    def __init__(self, heads, d_model, dropout=0.1):
         super(MultiHeadedAttention, self).__init__()
-        assert d_model % h == 0
-        self.d_k = d_model // h
-        self.h = h
+        assert d_model % heads == 0
+        self.d_k = d_model // heads
+        self.heads = heads
         self.linears = clones(nn.Linear(d_model, d_model), 4)
         self.attn = None
         self.dropout = nn.Dropout(p=dropout)
@@ -55,7 +55,7 @@ class MultiHeadedAttention(nn.Module):
         n_batches = query.size(0)
 
         query, key, value = [
-            lin(x).view(n_batches, -1, self.h, self.d_k).transpose(1, 2)
+            lin(x).view(n_batches, -1, self.heads, self.d_k).transpose(1, 2)
             for lin, x in zip(self.linears, (query, key, value))
         ]
 
@@ -66,7 +66,7 @@ class MultiHeadedAttention(nn.Module):
         x = (
             x.transpose(1, 2)
             .contiguous()
-            .view(n_batches, -1, self.h * self.d_k)
+            .view(n_batches, -1, self.heads * self.d_k)
         )
         x = self.linears[-1](x)
         del key
@@ -91,11 +91,11 @@ class FeedForward(nn.Module):
 
 class EncoderLayer(nn.Module):
     
-    def __init__(self, h, d_model, d_ff, dropout=0.1):
+    def __init__(self, heads, d_model, d_ff, dropout=0.1):
         super(EncoderLayer, self).__init__()
 
         self.norm1 = LayerNorm(d_model)
-        self.attn = MultiHeadedAttention(h, d_model, dropout=dropout)
+        self.attn = MultiHeadedAttention(heads, d_model, dropout=dropout)
         self.dropout1 = nn.Dropout(p=dropout)
 
         self.norm2 = LayerNorm(d_model)
@@ -115,10 +115,10 @@ class EncoderLayer(nn.Module):
 
 
 class Encoder(nn.Module):
-    def __init__(self, h, d_model, d_ff, dropout, N):
+    def __init__(self, heads, d_model, d_ff, dropout, N):
         super().__init__()
 
-        self.layers = clones(EncoderLayer(h, d_model, d_ff, dropout), N)
+        self.layers = clones(EncoderLayer(heads, d_model, d_ff, dropout), N)
         self.norm = LayerNorm(d_model)
 
     def forward(self, x, mask):
@@ -127,18 +127,93 @@ class Encoder(nn.Module):
         return self.norm(x)
 
 
+class DecoderLayer(nn.Module):
+    def __init__(self, heads, d_model, d_ff, dropout=0.1):
+        super(DecoderLayer, self).__init__()
+        self.norm1 = LayerNorm(d_model)
+        self.src_attn = MultiHeadedAttention(heads, d_model, dropout=dropout)
+        self.dropout1 = nn.Dropout(p=dropout) 
+
+        self.norm2 = LayerNorm(d_model)
+        self.cross_atten = MultiHeadedAttention(heads, d_model, dropout=dropout)
+        self.dropout2 = nn.Dropout(p=dropout)
+
+        self.ffn = FeedForward(d_model, d_ff, dropout=dropout)
+        self.dropout3 = nn.Dropout(p=dropout)
+    
+    def forward(self, x, memory, src_mask, tgt_mask):
+        x_norm = self.norm1(x)
+        x_attn = self.src_attn(x_norm, x_norm, x_norm, tgt_mask)
+        x = x + self.dropout1(x_attn)
+
+        x_norm = self.norm2(x)
+        cross_attn = self.cross_atten(x_norm, memory, memory, src_mask)
+        x = x + self.dropout2(cross_attn)
+        
+        x_ffn = self.ffn(x)
+        x = x + self.dropout3(x_ffn)
+        return x
+
+
+class Decoder(nn.Module):
+    def __init__(self, heads, d_model, d_ff, dropout, N):
+        super(Decoder, self).__init__()
+        self.layers = clones(DecoderLayer(heads, d_model, d_ff, dropout), N)
+        self.norm = LayerNorm(d_model)
+    
+    def forward(self, x, memory, src_mask, tgt_mask):
+        for layer in self.layers:
+            x = layer(x, memory, src_mask, tgt_mask)
+        return self.norm(x)
+
+
 class Embeddings(nn.Module):
-    def __init__(self, d_model, vcoab):
+    def __init__(self, vcoab_size, d_model):
         super(Embeddings, self).__init__()
-        self.lut = nn.Embedding(vcoab, d_model)
+        self.lut = nn.Embedding(vcoab_size, d_model)
         self.d_model = d_model
 
     def forward(self, x):
         return self.lut(x) * math.sqrt(self.d_model)
 
 
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, dropout, max_len=5000) -> None:
+        super(PositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2) * -(math.log(1000.0) / d_model)
+        )
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)
+        self.register_buffer("pe", pe)
+
+    def forward(self, x):
+        x = x + self.pe[:, : x.size(1)].requires_grad_(False)
+        x = self.dropout(x)
+        return x
+
+
 class Transformer(nn.Module):
-    pass
+    def __init__(self, src_vocab, tgt_vocab, d_model, d_ff, N, heads, dropout) -> None:
+        super().__init__()
+        self.src_embed = Embeddings(src_vocab, d_model)
+        self.pos_embed = PositionalEncoding(d_model, dropout)
+        self.encoder = Encoder(heads, d_model, d_ff, dropout, N)
+
+    def forward(self, src, tgt, src_mask, tgt_mask):
+        x = self.encode(src, src_mask)
+        return x
+
+    def encode(self, src, src_mask):
+        x = self.src_embed(src)
+        x = self.pos_embed(x)
+        x = self.encoder(x, mask=src_mask)
+        return x
 
 
 if __name__ == "__main__":
@@ -166,4 +241,15 @@ if __name__ == "__main__":
 
     encoder = Encoder(8, 768, 2048, 0.1, 8)
     x = encoder(x, mask=None)
+    print(x.shape)
+
+    transformer = Transformer(1000, 1000, 768, 2048, 6, 8, dropout=0.1)
+    src = torch.LongTensor([[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]])
+    src_mask = torch.ones(1, 1, 10)
+    x = transformer(src, src_mask, None, None)
+    print(x.shape)
+
+
+    decoderlayer = DecoderLayer(8, 768, d_ff=2048)
+    x = decoderlayer(query, key, None, None)
     print(x.shape)
