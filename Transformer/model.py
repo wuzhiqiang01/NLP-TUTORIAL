@@ -141,7 +141,7 @@ class DecoderLayer(nn.Module):
         self.ffn = FeedForward(d_model, d_ff, dropout=dropout)
         self.dropout3 = nn.Dropout(p=dropout)
     
-    def forward(self, x, memory, src_mask, tgt_mask):
+    def forward(self, x, memory, tgt_mask, src_mask):
         x_norm = self.norm1(x)
         x_attn = self.src_attn(x_norm, x_norm, x_norm, tgt_mask)
         x = x + self.dropout1(x_attn)
@@ -198,6 +198,15 @@ class PositionalEncoding(nn.Module):
         return x
 
 
+class Classifier(nn.Module):
+    def __init__(self, d_model, tgt_vocab):
+        super(Classifier, self).__init__()
+        self.proj = nn.Linear(d_model, tgt_vocab)
+    
+    def forward(self, x):
+        return F.log_softmax(self.proj(x), dim=-1)
+
+
 class Transformer(nn.Module):
     def __init__(self, src_vocab, tgt_vocab, d_model, d_ff, N, heads, dropout) -> None:
         super().__init__()
@@ -205,8 +214,14 @@ class Transformer(nn.Module):
         self.pos_embed = PositionalEncoding(d_model, dropout)
         self.encoder = Encoder(heads, d_model, d_ff, dropout, N)
 
+        self.tgt_embed = Embeddings(tgt_vocab, d_model)
+        self.decoder = Decoder(heads, d_model, d_ff, dropout, N)
+        self.classifier = Classifier(d_model, tgt_vocab)
+
+
     def forward(self, src, tgt, src_mask, tgt_mask):
-        x = self.encode(src, src_mask)
+        memory = self.encode(src, src_mask)
+        x = self.decode(tgt, memory, tgt_mask, src_mask)
         return x
 
     def encode(self, src, src_mask):
@@ -215,41 +230,115 @@ class Transformer(nn.Module):
         x = self.encoder(x, mask=src_mask)
         return x
 
-
-if __name__ == "__main__":
-    layer_norm = LayerNorm(features=768)
-    x = torch.rand((1, 10, 768))
-    print(x.shape)
-    y = layer_norm(x)
-    print(y.shape)
+    def decode(self, tgt, memory, tgt_mask, src_mask):
+        x = self.tgt_embed(tgt)
+        x = self.pos_embed(x)
+        x = self.decoder(x, memory, tgt_mask, src_mask)
+        return x
 
 
-    query = torch.rand((1, 10, 768))
-    key = torch.rand((1, 10, 768))
-    value = torch.rand((1, 10, 768))
-    attention(query, key, value)
+def make_model(src_vocab, tgt_vocab, N=6, d_model=512, d_ff=2048, h=8, dropout=0.1):
+    model = Transformer(
+        src_vocab=src_vocab,
+        tgt_vocab=tgt_vocab,
+        d_model=d_model,
+        d_ff=d_ff,
+        N=N,
+        heads=h,
+        dropout=dropout
+    )
+    # print(model)
+    for p in model.parameters():
+        if p.dim() > 1:
+            nn.init.xavier_normal_(p)
+    return model
 
-    multiheadattention = MultiHeadedAttention(8, d_model=768)
-    x = multiheadattention(query, key, value)
-    print(x.shape)
+def subsequent_mask(size):
+    "Mask out subsequent positions."
+    attn_shape = (1, size, size)
+    subsequent_mask = torch.triu(torch.ones(attn_shape), diagonal=1).type(
+        torch.uint8
+    )
+    return subsequent_mask == 0
 
 
-    encoder_layer = EncoderLayer(8, d_model=768, d_ff=2048)
-    x = encoder_layer(x, mask=None)
-    print(x.shape)
+def inference_test():
+    test_model = make_model(11, 11, 2)
+    test_model.eval()
 
-
-    encoder = Encoder(8, 768, 2048, 0.1, 8)
-    x = encoder(x, mask=None)
-    print(x.shape)
-
-    transformer = Transformer(1000, 1000, 768, 2048, 6, 8, dropout=0.1)
     src = torch.LongTensor([[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]])
     src_mask = torch.ones(1, 1, 10)
-    x = transformer(src, src_mask, None, None)
-    print(x.shape)
+
+    memory = test_model.encode(src, src_mask)
+    ys = torch.zeros(1, 1).type_as(src)
+
+    for i in range(9):
+        out = test_model.decode(
+            ys, memory, subsequent_mask(ys.size(1)).type_as(src.data), src_mask
+        )
+        prob = test_model.classifier(out[:, -1])
+        _, next_word = torch.max(prob, dim=1)
+
+        next_word = next_word.data[0]
+        ys = torch.cat(
+            [ys, torch.empty(1, 1).type_as(src.data).fill_(next_word)],
+            dim=1
+        )
+    print("Example Untrained Model Prediction: ", ys)
+
+def run_tests():
+    for _ in range(10):
+        inference_test()
 
 
-    decoderlayer = DecoderLayer(8, 768, d_ff=2048)
-    x = decoderlayer(query, key, None, None)
-    print(x.shape)
+if __name__ == "__main__":
+    model = make_model(11, 11)
+    # print(model)
+    # inference_test()
+    run_tests()
+
+    # layer_norm = LayerNorm(features=768)
+    # x = torch.rand((1, 10, 768))
+    # print(x.shape)
+    # y = layer_norm(x)
+    # print(y.shape)
+
+
+    # query = torch.rand((1, 10, 768))
+    # key = torch.rand((1, 10, 768))
+    # value = torch.rand((1, 10, 768))
+    # attention(query, key, value)
+
+    # multiheadattention = MultiHeadedAttention(8, d_model=768)
+    # x = multiheadattention(query, key, value)
+    # print(x.shape)
+
+
+    # encoder_layer = EncoderLayer(8, d_model=768, d_ff=2048)
+    # x = encoder_layer(x, mask=None)
+    # print(x.shape)
+
+
+    # encoder = Encoder(8, 768, 2048, 0.1, 8)
+    # x = encoder(x, mask=None)
+    # print(x.shape)
+
+    # transformer = Transformer(1000, 1000, 768, 2048, 6, 8, dropout=0.1)
+    # src = torch.LongTensor([[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]])
+    # src_mask = torch.ones(1, 1, 10)
+    # x = transformer(src, src, src_mask, src_mask)
+    # print(x.shape)
+
+
+    # decoderlayer = DecoderLayer(8, 768, d_ff=2048)
+    # x = decoderlayer(query, key, None, None)
+    # print(x.shape)
+
+    # decoder = Decoder(8, 768, 2048, 0.1, 8)
+    # x = decoder(query, key, None, None)
+    # print(x.shape)
+
+
+    # model = Transformer(1000, 1000, 768, 2048, 6, 8, 0.1)
+    # x = model(src, src, src_mask, src_mask)
+    # print(x.shape)
