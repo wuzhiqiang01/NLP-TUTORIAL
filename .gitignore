@@ -1,7 +1,9 @@
 # Byte-compiled / optimized / DLL files
 *.de
 *.en
+*.pth
 *.pt
+*.tar.gz
 __pycache__/
 *.py[cod]
 *$py.class

@@ -212,10 +212,11 @@ class CFG():
     base_lr = 1.0
     max_padding = 72
     warmup = 3000
+    checkpoint_path = "checkpoint"
     file_prefix = "multi30k_model_"
 
     ngpus_per_node = 2
-    batch_size = 100
+    batch_size = 32
 
     # train
     step: int = 0  # Steps in the current epoch
@@ -421,7 +422,9 @@ def train(rank, vocab_src, vocab_tgt, spacy_de, spacy_en):
         )
         GPUtil.showUtilization()
         if is_main_process:
-            file_path = "%s%.2d.pt" % (CFG.file_prefix, epoch)
+            file_path = "{}/{}{}.pth".format(CFG.checkpoint_path,
+
+                                             CFG.file_prefix, epoch)
             torch.save(module.state_dict(), file_path)
         torch.cuda.empty_cache()
 
@@ -438,7 +441,8 @@ def train(rank, vocab_src, vocab_tgt, spacy_de, spacy_en):
         torch.cuda.empty_cache()
 
     if is_main_process:
-        file_path = "%sfinal.pt" % CFG.file_prefix
+        file_path = "{}/{}final.pth".format(CFG.checkpoint_path,
+                                        CFG.file_prefix)
         torch.save(module.state_dict(), file_path)
 
 def main():
