@@ -3,6 +3,9 @@
 *.en
 *.pth
 *.pt
+*.tgz
+*.zh
+*.csv
 *.tar.gz
 __pycache__/
 *.py[cod]

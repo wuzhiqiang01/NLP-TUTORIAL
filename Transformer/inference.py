@@ -62,7 +62,6 @@ def check_outputs(
     return results
 
 
-
 def main():
     spacy_de, spacy_en = load_tokenizers()
     vocab_src, vocab_tgt = load_vocab(spacy_de, spacy_en)
