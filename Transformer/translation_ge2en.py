@@ -206,7 +206,7 @@ def create_dataloaders(
 
 
 class CFG(): 
-    distributed = False
+    distributed = True
     num_epochs = 8
     accum_iter = 10
     base_lr = 1.0
